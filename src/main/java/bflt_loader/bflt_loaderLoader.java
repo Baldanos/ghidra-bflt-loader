@@ -36,6 +36,7 @@ import ghidra.util.task.TaskMonitor;
 import ghidra.program.flatapi.FlatProgramAPI;
 
 import ghidra.program.model.address.Address;
+import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.util.Msg;
 
@@ -123,10 +124,24 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 			}	
 		}
 		
+		// Perform relocation
+		try {
+			for (int relocIndex = 0; relocIndex < header.reloc_count; relocIndex++) {
+				var beReader = reader.asBigEndian();
+				long relocAddress = 0x40 + beReader.readUnsignedInt(header.base_address + header.data_end + 4 * relocIndex);
+				// Read the value as big endian, add 0x40 (header size) and then write it in the target architecture's endianness (usually little endian)
+				long relocValueBefore = beReader.readUnsignedInt(relocAddress);
+				long relocValueAfter = relocValueBefore + 0x40;
+				api.setInt(api.toAddr(relocAddress), (int) relocValueAfter);
+				// TODO store this as a Relocation in Ghidra DB https://ghidra.re/ghidra_docs/api/ghidra/program/model/reloc/Relocation.html
+			}
+		} catch (MemoryAccessException e) {
+			Msg.error(this, e.getMessage());
+		}
+		
 		api.addEntryPoint(api.toAddr(header.entry));
 		api.disassemble(api.toAddr(header.entry));
 		api.createFunction(api.toAddr(header.entry), "_entry");
-		
 	}
 	
 	//Taken from https://github.com/NeatMonster/mclf-ghidra-loader/blob/master/src/main/java/mclfloader/MCLFLoader.java
