@@ -12,6 +12,7 @@ bFLT files are commonly found in uclinux images, and are greatly documented here
  * Parses and loads sections according to the file header
  * Extracts GZip data section if GZDATA flag is set
  * Patches GOT entries if GOTPIC flag is set, and sets pointers for further analysis
+ * Patches relocations
 
 ## Installation
 
