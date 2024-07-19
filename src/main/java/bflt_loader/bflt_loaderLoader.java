@@ -36,8 +36,10 @@ import ghidra.util.task.TaskMonitor;
 import ghidra.program.flatapi.FlatProgramAPI;
 
 import ghidra.program.model.address.Address;
+import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.util.BigEndianDataConverter;
 import ghidra.util.Msg;
 
 /**
@@ -68,29 +70,34 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 		BinaryReader reader = new BinaryReader(provider, true);
 		FlatProgramAPI api = new FlatProgramAPI(program, monitor);
 		
-		reader.setPointerIndex(0);
+		reader.setPointerIndex(0L);
 		BFLTHeader header = new BFLTHeader(reader);
 		
 		InputStream input;
+		GZIPInputStream gis;
 		
 		//Create .text section
 		
 		//If loading a library, it will be loaded in upper memory, but the code will still be 
 		//right after the header
-		input = provider.getInputStream(header.entry & 0x00ffffff);
 		int text_section_size = header.data_start-(header.entry & 0x00ffffff);
+		if((header.flags & header.FLAT_FLAG_GZIP) != 0) {
+			input = new GZIPInputStream(provider.getInputStream(header.header_size));
+			input.skip(header.entry - header.header_size);
+		} else {
+			input = provider.getInputStream(header.entry & 0x00ffffff);
+		}
 		createSegment(api, input, ".text", api.toAddr(header.entry), text_section_size, true, false, true);
 		
 		//Create .data section
 		// If GZDATA, extract before creating section
+		// After reading the .text section, "input" stream will be
+		//   at the beginning of the .data section
 		if((header.flags & header.FLAT_FLAG_GZDATA) != 0) {
-			input = provider.getInputStream(header.data_start);
-			GZIPInputStream gis = new GZIPInputStream(input);
-			createSegment(api, gis, ".data", api.toAddr(header.data_start+header.base_address), header.data_end-header.data_start, true, true, false);
-		} else {
-			input = provider.getInputStream(header.data_start);
-			createSegment(api, input, ".data", api.toAddr(header.data_start+header.base_address), header.data_end-header.data_start, true, true, false);
+			input = new GZIPInputStream(input);
 		}
+		createSegment(api, input, ".data", api.toAddr(header.data_start+header.base_address), header.data_end-header.data_start, true, true, false);
+
 		
 		//Create .bss section
 		createSegment(api, null, ".bss", api.toAddr(header.data_end+header.base_address), header.bss_end, true, true, false);
@@ -126,11 +133,22 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 		
 		// Perform relocation
 		try {
+			if((header.flags & header.FLAT_FLAG_GZIP) != 0) {
+				input = new GZIPInputStream(provider.getInputStream(header.header_size));
+				input.skip(header.reloc_start - header.header_size);
+			} else if((header.flags & header.FLAT_FLAG_GZDATA) != 0) {
+				input = new GZIPInputStream(provider.getInputStream(header.data_start));
+				input.skip(header.reloc_start - header.data_start);
+			} else {
+				input = provider.getInputStream(header.reloc_start);
+			}
+
+			BigEndianDataConverter conv = BigEndianDataConverter.INSTANCE;
+			Memory mem = program.getMemory();
 			for (int relocIndex = 0; relocIndex < header.reloc_count; relocIndex++) {
-				var beReader = reader.asBigEndian();
-				long relocAddress = 0x40 + beReader.readUnsignedInt(header.base_address + header.data_end + 4 * relocIndex);
+				long relocAddress = 0x40 + (conv.getInt(input.readNBytes(4)) & 0xFFFFFFFFL);
 				// Read the value as big endian, add 0x40 (header size) and then write it in the target architecture's endianness (usually little endian)
-				long relocValueBefore = beReader.readUnsignedInt(relocAddress);
+				long relocValueBefore = mem.getInt(api.toAddr(relocAddress), true);
 				long relocValueAfter = relocValueBefore + 0x40;
 				api.setInt(api.toAddr(relocAddress), (int) relocValueAfter);
 				// TODO store this as a Relocation in Ghidra DB https://ghidra.re/ghidra_docs/api/ghidra/program/model/reloc/Relocation.html
