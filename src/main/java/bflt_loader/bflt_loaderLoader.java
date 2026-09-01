@@ -28,6 +28,8 @@ import ghidra.app.util.bin.ByteProvider;
 import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.AbstractLibrarySupportLoader;
 import ghidra.app.util.opinion.LoadSpec;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.listing.ContextChangeException;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.util.exception.CancelledException;
@@ -87,8 +89,11 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 		} else {
 			input = provider.getInputStream(header.entry & 0x00ffffff);
 		}
-		createSegment(api, input, ".text", api.toAddr(header.entry), text_section_size, true, false, true);
+
+		Address textStartAddress = api.toAddr(header.entry);
 		
+		createSegment(api, input, ".text", textStartAddress, text_section_size, true, false, true);
+
 		//Create .data section
 		// If GZDATA, extract before creating section
 		// After reading the .text section, "input" stream will be
@@ -106,6 +111,20 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 		if((header.flags & header.FLAT_FLAG_GOTPIC) != 0) {
 			long got_pointer = header.data_start+header.base_address;
 			int got_entry = 0;
+
+			String processorName = program.getLanguage().getProcessor().toString();
+
+			if (processorName.equals("68000")) {
+				Register a5Register = program.getRegister("A5");
+				Address textEndAddress = textStartAddress.add(text_section_size - 1);
+				java.math.BigInteger gotPointerBigInt = java.math.BigInteger.valueOf(got_pointer);
+
+				try {
+					program.getProgramContext().setValue(a5Register, textStartAddress, textEndAddress, gotPointerBigInt);
+				} catch (ContextChangeException contextChangeException) {
+					Msg.error(this, "Could not set the value of the A5 register: " + contextChangeException.getMessage());
+				}
+			}
 			
 			try {
 				got_entry = api.getInt(api.toAddr(got_pointer));
@@ -157,9 +176,9 @@ public class bflt_loaderLoader extends AbstractLibrarySupportLoader {
 			Msg.error(this, e.getMessage());
 		}
 		
-		api.addEntryPoint(api.toAddr(header.entry));
-		api.disassemble(api.toAddr(header.entry));
-		api.createFunction(api.toAddr(header.entry), "_entry");
+		api.addEntryPoint(textStartAddress);
+		api.disassemble(textStartAddress);
+		api.createFunction(textStartAddress, "_entry");
 	}
 	
 	//Taken from https://github.com/NeatMonster/mclf-ghidra-loader/blob/master/src/main/java/mclfloader/MCLFLoader.java
